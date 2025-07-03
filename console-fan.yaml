@@ -1,523 +1,596 @@
-  substitutions:
-    friendly_name: Console Fan
+substitutions:
+  friendly_name: Console Fan
+  # DISPLAY PINOUT
+  eink_spi: "17"      # purple AKA busy_pin
+  eink_rst: "16"       # orange AKA reset_pin
+  eink_dc: "4"        # white AKA dc_pin
+  eink_cs: "2"       # blue
+  eink_scl: "15"      # green AKA clk_pin
+  eink_sda: "13"      # yellow AKA mosi_pin 
 
-  globals:
-    - id: last_interaction_time_millis # Track time since last rotary input to time-out menu and return to main_page
-      type: uint64_t
-      restore_value: no
-      initial_value: '0'
+  # INPUTS PINOUT 
+  rotary_pin_a: "18" 
+  rotary_pin_b: "19" 
+  rotary_switch: "5" 
+  sensor_pin: "25"
 
-  esphome:
-    name: console-fan
+  # OUTPUTS PINOUT
+  fan1_tach: "34"
+  fan1_pwm: "32"
+  fan2_tach: "35"
+  fan2_pwm: "33"     
 
-  # Throttle writing parameters to the internal flash memory to reduce ESP memory wear / degradation
-  preferences:
-    flash_write_interval: 15min
+globals:
+  - id: last_interaction_time_millis # Track time since last rotary input to time-out menu and return to main_page
+    type: uint64_t
+    restore_value: no
+    initial_value: '0'
 
+esphome:
+  name: console-fan
+
+# Throttle writing parameters to the internal flash memory to reduce ESP memory wear / degradation
+preferences:
+  flash_write_interval: 15min
+
+
+#########################
+# ESP32 AND NETWORK SETUP
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# pid climate log update is noisy, dial it back to warn
+logger:
+  level: DEBUG
+  logs: 
+    climate: ERROR
+    dht: WARN
+
+# default HA integration, OTA updater and backup http web portal
+api:
+
+ota:
+  - platform: esphome
   
-  #########################
-  # ESP32 AND NETWORK SETUP
+wifi:
 
-  esp32:
-    board: esp32dev
-    framework:
-      type: esp-idf
+  # Read the wifi/pass from secrets.yaml:
+  # wifi_ssid: "My Wifi XX"
+  # wifi_password: "XXXXXXX"
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
 
-  # pid climate log update is noisy, dial it back to warn
-  logger:
-    level: DEBUG
-    logs: 
-      climate: ERROR
-      dht: WARN
+web_server:
+  port: 80
+  version: 3
+  local: true
+  sorting_groups:
+    - id: sorting_group_fans
+      name: "Fans"
+      sorting_weight: 40
+script:
+  - id: reset_interaction_timeout # Track millis time since last rotary input to time-out menu and return to main_page
+    mode: single
+    then:
+      - globals.set:
+          id: last_interaction_time_millis
+          value: !lambda return millis();
 
-  # default HA integration, OTA updater and backup http web portal
-  api:
+number:
 
-  ota:
-    - platform: esphome
-    
-  wifi:
+  ## OPTIONAL:
+  # RECEIVE KP, KI and KD parameters from input_text.kx helpers in 
+  # Home Assistant. See the PID controller below
+  # These helper values will get saved to flash thus permanently over-riding 
+  # the initial values set in the PID below.
 
-    # Read the wifi/pass from secrets.yaml:
-    # wifi_ssid: "My Wifi XX"
-    # wifi_password: "XXXXXXX"
-    ssid: !secret wifi_ssid
-    password: !secret wifi_password
-
-  web_server:
-    port: 80
-    version: 3
-    local: true
-
-  script:
-    - id: reset_interaction_timeout # Track millis time since last rotary input to time-out menu and return to main_page
-      mode: single
-      then:
-        - globals.set:
-            id: last_interaction_time_millis
-            value: !lambda return millis();
-
-  number:
-
-    ## OPTIONAL:
-    # RECEIVE KP, KI and KD parameters from input_text.kx helpers in 
-    # Home Assistant. See the PID controller below
-    # These helper values will get saved to flash thus permanently over-riding 
-    # the initial values set in the PID below.
-
-    # KP
-    - platform: template
-      name: kp
-      icon: mdi:chart-bell-curve
-      restore_value: true
-      initial_value: 0.3
-      min_value: 0
-      max_value: 50
-      step: 0.001
-      optimistic: true
-      set_action: 
-        lambda: |- 
-          id(console_thermostat).set_kp( x );
-
-    # KI
-    - platform: template
-      name: ki
-      icon: mdi:chart-bell-curve
-      restore_value: true
-      initial_value: 0.0015
-      min_value: 0
-      max_value: 50
-      step: 0.0001
-      optimistic: true
-      set_action: 
-        lambda: id(console_thermostat).set_ki( x );
-
-    # KD
-    - platform: template
-      name: kd
-      icon: mdi:chart-bell-curve
-      restore_value: true
-      initial_value: 0.0
-      min_value: -50
-      max_value: 50
-      step: 0.001
-      optimistic: true
-      set_action: 
-        lambda: id(console_thermostat).set_kd( x );
-
-    # Set threshold low
-    - platform: template
-      name: Deadband Threshold Low
-      icon: mdi:chart-bell-curve
-      restore_value: true
-      initial_value: -1.0
-      min_value: -20
-      max_value: 0
-      step: 0.1
-      optimistic: true
-      set_action: 
-        lambda: id(console_thermostat).set_threshold_low( x );
-
-    # Set threshold high
-    - platform: template
-      name: Deadband Threshold High
-      icon: mdi:chart-bell-curve
-      restore_value: true
-      initial_value: 0.4
-      min_value: 0
-      max_value: 20
-      step: 0.1
-      optimistic: true
-      set_action: 
-        lambda: id(console_thermostat).set_threshold_high( x );
-
-    # Set ki multiplier
-    - platform: template
-      name: Deadband ki Multiplier
-      icon: mdi:chart-bell-curve
-      restore_value: true
-      initial_value: 0.04
-      min_value: 0
-      max_value: .2
-      step: 0.01
-      optimistic: true
-      set_action: 
-        lambda: id(console_thermostat).set_ki_multiplier( x );
-
-  text_sensor:
-
-    # Send IP Address
-    - platform: wifi_info
-      ip_address:
-        name: $friendly_name IP Address
-
-    # Send Uptime in raw seconds
-    - platform: template
-      name: $friendly_name Uptime
-      id: uptime_human
-      icon: mdi:clock-start
-
-  binary_sensor:
-    # This is the button on the rotary encoder.
-    # It is used to enter the main menu.
-    - platform: gpio  # ROTARY ENCODER BUTTON
-      internal: true
-      pin:
-        number: 5
-        mode: input_pullup
-        inverted: true
-      id: button_rotary
-      filters:
-        - delayed_on: 30ms
-        - delayed_off: 30ms
-      on_press:
-        - if:
-            condition:
-              display_menu.is_active: main_menu
-            then:
-              - display_menu.enter: main_menu
-            else:
-              - display_menu.show:  main_menu
-
-
-  sensor:
-
-    # Send WiFi signal strength & uptime to HA
-    - platform: wifi_signal
-      name: $friendly_name WiFi Strength
-      update_interval: 60s
-
-    # This is a bit of overkill. It sends a human readable 
-    # uptime string 1h 41m 32s instead of 6092 seconds
-    - platform: uptime
-      name: $friendly_name Uptime
-      id: uptime_sensor
-      update_interval: 60s
-      on_raw_value:
-        then:
-          - text_sensor.template.publish:
-              id: uptime_human
-              # Custom C++ code to generate the result
-              state: !lambda |-
-                int seconds = round(id(uptime_sensor).raw_state);
-                int days = seconds / (24 * 3600);
-                seconds = seconds % (24 * 3600);
-                int hours = seconds / 3600;
-                seconds = seconds % 3600;
-                int minutes = seconds /  60;
-                seconds = seconds % 60;
-                return (
-                  (days ? to_string(days) + "d " : "") +
-                  (hours ? to_string(hours) + "h " : "") +
-                  (minutes ? to_string(minutes) + "m " : "") +
-                  (to_string(seconds) + "s")
-                ).c_str();
-
-    # Read the Tacho PIN and show measured RPM as a sensor (only with 4-pin PWM fans!)
-    # See instructions here: https://esphome.io/components/sensor/pulse_counter.html
-    - platform: pulse_counter
-      pin: 
-        number: GPIO25   # Connect to any input PIN on the ESP
-        mode: INPUT_PULLUP
-      unit_of_measurement: 'RPM'
-      id: fan_speed
-      name: $friendly_name Fan Speed 1
-      accuracy_decimals: 0
-      filters:
-        - multiply: 0.5  # Depending on how many pulses the fan sends per round - should be 0.5 or 1 - try...
-
-    - platform: pulse_counter
-      pin: 
-        number: GPIO26   # Connect to any input PIN on the ESP
-        mode: INPUT_PULLUP
-      unit_of_measurement: 'RPM'
-      id: fan_speed_2
-      name: $friendly_name Fan Speed 2
-      accuracy_decimals: 0
-      filters:
-        - multiply: 0.5  # Depending on how many pulses the fan sends per round - should be 0.5 or 1 - try...
-
-
-  ########################################################
-  # START THE FAN CONTROLLER SETUP
-
-    - platform: template
-      name: $friendly_name p term
-      id: p_term
-      unit_of_measurement: "%"
-      accuracy_decimals: 2
-
-    - platform: template
-      name: $friendly_name i term
-      id: i_term
-      unit_of_measurement: "%"
-      accuracy_decimals: 2
-
-    - platform: template
-      name: $friendly_name d term
-      id: d_term
-      unit_of_measurement: "%"
-      accuracy_decimals: 2
-
-    - platform: template
-      name: $friendly_name output value
-      unit_of_measurement: "%"
-      id: o_term
-      accuracy_decimals: 2
-
-    - platform: template
-      name: $friendly_name error value
-      id: e_term
-      accuracy_decimals: 2
-
-    - platform: template
-      name: $friendly_name is in deadband
-      id: in_deadband_term
-      accuracy_decimals: 0
-
-    # GET TEMP/HUMIDITY FROM DHT11
-    - platform: dht
-      pin: GPIO33
-      temperature:
-        name: "Temperature"
-        id: console_fan_temperature
-        accuracy_decimals: 3
-
-        # If you don't smooth the temperature readings 
-        # the PID controller over reacts to small changes.
-        filters:
-          - exponential_moving_average:  
-              alpha: 0.1
-              send_every: 1
-
-      humidity:
-        name: "Humidity"
-        id: console_fan_humidity
-
-      # the DHT11 can only be read every 1s. Use 1.3s to be safe.
-      update_interval: 1.3s
-
-    # Every time the fan speed is updated, this sensor will
-    # also be updated for displaying on the frontend. 
-    # See proxy_output.
-    - platform: template
-      name: "Fan Speed (PWM Voltage)"
-      unit_of_measurement: "%"
-      id: fan_speed_pwm_voltage
-
-    - platform: rotary_encoder
-      id: sensor_rotary
-      pin_a: 18
-      pin_b: 19
-      filters:
-        debounce: 30ms
-      on_anticlockwise:
-        - display_menu.up: main_menu
-      on_clockwise:
-        - display_menu.down: main_menu
-
-
-
-
-
-  output:
-    # Wire this pin (13) into the PWM pin of your 12v fan
-    # ledc is the name of the pwm output system on an esp32
-    - platform: ledc
-      id: console_fan_speed
-      pin: GPIO27
-
-      # 25KHz is standard PC fan frequency, minimises buzzing
-      frequency: "25000 Hz" 
-
-      # my fans stop working below 13% powerful.
-      # also they're  powerful and loud, cap their max speed to 80%
-      min_power: 0%
-      max_power: 80%
-
-      # At 0, actually turn it off, otherwise the power keeps going.
-      zero_means_zero: true
-
-    # This proxy output takes its input
-    # if the manual fan control is on, use the level from that
-    # otherwise use the PID control value.
-    # Then publish the result to the fan (ledc) and 
-    # also publish to the template output sensor
-    - platform: template
-      id: proxy_output
-      type: float
-      write_action:
-        lambda: |-
-          float write_val = 
-            (id(manual_fan_control).state) ? // Check if manual control is enabled
-              id(manual_fan_control).speed / 100.0 : state*1.0; // If enabled, use the manual speed value, otherwise use the PID control value
-          id(console_fan_speed).set_level(write_val); // Set the fan speed
-          id(fan_speed_pwm_voltage).publish_state(write_val*100.0); // Publish the fan speed to the frontend
-
-  # If you turn this on, you can manually set the fan speed.
-  # The PID will be ignored. This is done via the proxy_output.
-  fan:
-    - platform: speed
-      id: manual_fan_control
-      output: proxy_output
-      name: "Manual Fan Speed"
-
-  # Expose a PID-controlled Thermostat
-  # Manual: https://esphome.io/components/climate/pid.html
-  climate:
-    - platform: pid
-      name: "Console Fan Thermostat"
-      id: console_thermostat
-      sensor: console_fan_temperature
-
-      # It is summer right now, so 30c is a decent target.
-      default_target_temperature: 30°C
-      cool_output: proxy_output
-      # cool_output: console_fan_speed
-
-      # ON state change, publish the values to the x_term numbers defined 
-      # above, so that they can be viewed in HA
-      on_state:
-        - sensor.template.publish:
-            id: p_term
-            state: !lambda 'return -id(console_thermostat).get_proportional_term() * 100.0;'
-        - sensor.template.publish:
-            id: i_term
-            state: !lambda 'return -id(console_thermostat).get_integral_term()* 100.0;'
-        - sensor.template.publish:
-            id: d_term
-            state: !lambda 'return -id(console_thermostat).get_derivative_term()* 100.0;'
-        - sensor.template.publish:
-            id: o_term
-            state: !lambda 'return -id(console_thermostat).get_output_value()* 100.0;'
-        - sensor.template.publish:
-            id: in_deadband_term
-            state: !lambda 'return id(console_thermostat).in_deadband();'
-        - sensor.template.publish:
-            id: e_term
-            state: !lambda 'return -id(console_thermostat).get_error_value();'
-          
-      # The extents of the HA Thermostat
-      visual:
-        min_temperature: 20 °C
-        max_temperature: 50 °C
-    
-      # See the README for setting up these parameters.
-      # These are over ridden by the number templates above.
-      control_parameters:
-        kp: 0.3
-        ki: 0.0015
-        kd: 0
-        max_integral: 0.0
-        output_averaging_samples: 1
-        derivative_averaging_samples: 5
-
-      # How to behave when close to the target temperature?
-      deadband_parameters:
-        threshold_high: 0.4°C
-        threshold_low: -1.0°C
-        kp_multiplier: 0.0
-        ki_multiplier: 0.04
-        kd_multiplier: 0.0
-        deadband_output_averaging_samples: 15
-
-  switch:
-    # Expose an ESP32 restart button to HA
-    - platform: restart
-      name: ${friendly_name} ESP32 Restart
-      id: console_fan_restart
-
-  # Restart every day at 12:30am. 
-  # I've had some memory issues lockup 
-  # the device after a couple weeks
-  time:
-    - platform: homeassistant
-      on_time:
-        # Every morning at 12:30am
-      - seconds: 0
-        minutes: 30
-        hours: 0
-        then:
-        - switch.turn_on: console_fan_restart
-
-
-  # I was able to find good KP,KI,KD values manually, per the instructions,
-  # but you can try pressing the autotune button from home assistant and copying the 
-  # values it produces. 
-  # See more at: https://esphome.io/components/climate/pid.html#climate-pid-autotune-action
-  button:
+  # KP
   - platform: template
-    name: "PID Climate Autotune"
-    on_press: 
-      - climate.pid.autotune: console_thermostat
+    name: kp
+    icon: mdi:chart-bell-curve
+    restore_value: true
+    initial_value: 0.3
+    min_value: 0
+    max_value: 50
+    step: 0.001
+    optimistic: true
+    set_action: 
+      lambda: |- 
+        id(console_thermostat).set_kp( x );
 
-      
-  spi: # DISPLAY SPI
-    clk_pin: 15 # aka SCL
-    mosi_pin: 13 # aka SDA
+  # KI
+  - platform: template
+    name: ki
+    icon: mdi:chart-bell-curve
+    restore_value: true
+    initial_value: 0.0015
+    min_value: 0
+    max_value: 50
+    step: 0.0001
+    optimistic: true
+    set_action: 
+      lambda: id(console_thermostat).set_ki( x );
 
-  display:
-    - platform: waveshare_epaper
-      id: display_eink
-      cs_pin: 2
-      dc_pin: 4
-      busy_pin: 17
-      reset_pin: 16
-      model: 2.13inv3
-      full_update_every: 120
-      update_interval: never
-      reset_duration: 2ms
-      rotation: 270
+  # KD
+  - platform: template
+    name: kd
+    icon: mdi:chart-bell-curve
+    restore_value: true
+    initial_value: 0.0
+    min_value: -50
+    max_value: 50
+    step: 0.001
+    optimistic: true
+    set_action: 
+      lambda: id(console_thermostat).set_kd( x );
 
-  graphical_display_menu:
-    id: main_menu
-    display: display_eink
-    on_redraw:
+  # Set threshold low
+  - platform: template
+    name: Deadband Threshold Low
+    icon: mdi:chart-bell-curve
+    restore_value: true
+    initial_value: -1.0
+    min_value: -20
+    max_value: 0
+    step: 0.1
+    optimistic: true
+    set_action: 
+      lambda: id(console_thermostat).set_threshold_low( x );
+
+  # Set threshold high
+  - platform: template
+    name: Deadband Threshold High
+    icon: mdi:chart-bell-curve
+    restore_value: true
+    initial_value: 0.4
+    min_value: 0
+    max_value: 20
+    step: 0.1
+    optimistic: true
+    set_action: 
+      lambda: id(console_thermostat).set_threshold_high( x );
+
+  # Set ki multiplier
+  - platform: template
+    name: Deadband ki Multiplier
+    icon: mdi:chart-bell-curve
+    restore_value: true
+    initial_value: 0.04
+    min_value: 0
+    max_value: .2
+    step: 0.01
+    optimistic: true
+    set_action: 
+      lambda: id(console_thermostat).set_ki_multiplier( x );
+
+text_sensor:
+
+  # Send IP Address
+  - platform: wifi_info
+    ip_address:
+      name: $friendly_name IP Address
+
+  # Send Uptime in raw seconds
+  - platform: template
+    name: $friendly_name Uptime
+    id: uptime_human
+    icon: mdi:clock-start
+
+binary_sensor:
+
+  - platform: gpio  # ROTARY ENCODER BUTTON
+    internal: true
+    pin:
+      number: ${rotary_switch} # Connect to the switch pin of the rotary encoder
+      mode: input_pullup
+      inverted: true
+    id: button_rotary
+    filters:
+      - delayed_on: 30ms
+      - delayed_off: 30ms
+    on_press:
+      - if:
+          condition:
+            display_menu.is_active: main_menu
+          then:
+            - display_menu.enter: main_menu
+          else:
+            - display_menu.show:  main_menu
+
+sensor:
+
+  - platform: wifi_signal  # Send WiFi signal strength & uptime to HA
+    name: $friendly_name WiFi Strength
+    update_interval: 60s
+
+  - platform: uptime 
+    name: $friendly_name Uptime
+    id: uptime_sensor
+    update_interval: 60s
+    on_raw_value:
       then:
-        component.update: display_eink
-    active: false
-    font: roboto_16
-    mode: rotary
-    items:
-      - type: Label
-        text: Menu Item 1
-      - type: Label
-        text: Menu Item 2
-      - type: custom
-        immediate_edit: false
-        text: "Manual Fan Speed:"
-        value_lambda: |-
-          int percent = (int)(id(manual_fan_control).speed);
-          if (percent < 0) percent = 0;
-          if (percent > 100) percent = 100;
-          return to_string(percent) + " %";
-        on_next:
-          then:
-            lambda: |-
-              int speed = (int)id(manual_fan_control).speed;
-              if (speed < 100) speed += 10;
-              if (speed > 100) speed = 100;
-              id(manual_fan_control).speed = speed;
-              id(manual_fan_control).publish_state();
-              id(fan_speed_pwm_voltage).publish_state(speed);
-        on_prev:
-          then:
-            lambda: |-
-              int speed = (int)id(manual_fan_control).speed;
-              if (speed > 0) speed -= 10;
-              if (speed < 0) speed = 0;
-              id(manual_fan_control).speed = speed;
-              id(manual_fan_control).publish_state();
-              id(fan_speed_pwm_voltage).publish_state(speed);
-        on_enter:
-          then:
-            - fan.turn_on: manual_fan_control
+        - text_sensor.template.publish:
+            id: uptime_human
+            # Custom C++ code to generate the result
+            state: !lambda |-
+              int seconds = round(id(uptime_sensor).raw_state);
+              int days = seconds / (24 * 3600);
+              seconds = seconds % (24 * 3600);
+              int hours = seconds / 3600;
+              seconds = seconds % 3600;
+              int minutes = seconds /  60;
+              seconds = seconds % 60;
+              return (
+                (days ? to_string(days) + "d " : "") +
+                (hours ? to_string(hours) + "h " : "") +
+                (minutes ? to_string(minutes) + "m " : "") +
+                (to_string(seconds) + "s")
+              ).c_str();
 
-  font:
+  # Read the Tacho PIN and show measured RPM as a sensor (only with 4-pin PWM fans!)
+  # See instructions here: https://esphome.io/components/sensor/pulse_counter.html
+  - platform: pulse_counter # FAN 1 TACH
+    pin: 
+      number: ${fan1_tach} # Connect to any input PIN on the ESP
+    unit_of_measurement: 'RPM'
+    id: fan1_tach
+    name: $friendly_name Fan Speed 1
+    accuracy_decimals: 0
+    filters:
+      - multiply: 0.5  # Depending on how many pulses the fan sends per round - should be 0.5 or 1 - try...
 
-    - file:
-        type: gfonts
-        family: Roboto
-        weight: 900
-      id: roboto_16
-      size: 16
+  - platform: pulse_counter # FAN 2 TACH
+    pin: 
+      number: ${fan2_tach}   # Connect to any input PIN on the ESP
+    unit_of_measurement: 'RPM'
+    id: fan2_tach
+    name: $friendly_name Fan Speed 2
+    accuracy_decimals: 0
+    filters:
+      - multiply: 0.5  # Depending on how many pulses the fan sends per round - should be 0.5 or 1 - try...
+
+
+  - platform: template
+    name: $friendly_name p term
+    id: p_term
+    unit_of_measurement: "%"
+    accuracy_decimals: 2
+
+  - platform: template
+    name: $friendly_name i term
+    id: i_term
+    unit_of_measurement: "%"
+    accuracy_decimals: 2
+
+  - platform: template
+    name: $friendly_name d term
+    id: d_term
+    unit_of_measurement: "%"
+    accuracy_decimals: 2
+
+  - platform: template
+    name: $friendly_name output value
+    unit_of_measurement: "%"
+    id: o_term
+    accuracy_decimals: 2
+
+  - platform: template
+    name: $friendly_name error value
+    id: e_term
+    accuracy_decimals: 2
+
+  - platform: template
+    name: $friendly_name is in deadband
+    id: in_deadband_term
+    accuracy_decimals: 0
+
+  # GET TEMP/HUMIDITY FROM DHT11
+  - platform: dht
+    pin: ${sensor_pin}
+    model: DHT22
+    update_interval: 60s
+    temperature:
+      name: "Temperature"
+      id: console_fan_temperature
+      accuracy_decimals: 3
+
+      # If you don't smooth the temperature readings 
+      # the PID controller over reacts to small changes.
+      filters:
+        - exponential_moving_average:  
+            alpha: 0.1
+            send_every: 1
+
+    humidity:
+      name: "Humidity"
+      id: console_fan_humidity
+
+  # Every time the fan speed is updated, this sensor will
+  # also be updated for displaying on the frontend. 
+  # See proxy_output.
+  - platform: template
+    name: "Fan1 Speed (PWM Voltage)"
+    unit_of_measurement: "%"
+    id: fan1_speed_pwm_voltage
+
+  - platform: template
+    name: "Fan2 Speed (PWM Voltage)"
+    unit_of_measurement: "%"
+    id: fan2_speed_pwm_voltage
+
+  - platform: rotary_encoder
+    id: sensor_rotary
+    pin_a: ${rotary_pin_a}
+    pin_b: ${rotary_pin_b}
+    filters:
+      debounce: 30ms
+    on_anticlockwise:
+      - display_menu.up: main_menu
+    on_clockwise:
+      - display_menu.down: main_menu
+
+output:
+  - platform: ledc 
+    id: fan1_speed
+    pin: ${fan1_pwm}
+    frequency: "25000 Hz"      # 25KHz is standard PC fan frequency, minimises buzzing
+    min_power: 0%
+    max_power: 80%
+    zero_means_zero: true       # At 0, actually turn it off, otherwise the power keeps going.
+
+  - platform: ledc
+    id: fan2_speed
+    pin: ${fan2_pwm}
+    frequency: "25000 Hz"      # 25KHz is standard PC fan frequency, minimises buzzing
+    min_power: 0%
+    max_power: 80%
+    zero_means_zero: true       # At 0, actually turn it off, otherwise the power keeps going.
+
+  # This proxy output takes its input
+  # if the manual fan control is on, use the level from that
+  # otherwise use the PID control value.
+  # Then publish the result to the fan (ledc) and 
+  # also publish to the template output sensor
+
+  # - platform: template
+  #   id: proxy_output
+  #   type: float
+  #   write_action:
+  #     lambda: |-
+  #       float write_val = 
+  #         (id(manual_fan_control).state) ? // Check if manual control is enabled
+  #           id(manual_fan_control).speed / 100.0 : state*1.0; // If enabled, use the manual speed value, otherwise use the PID control value
+  #       id(fan1_speed).set_level(write_val); // Set the fan1 speed
+  #       id(fan2_speed).set_level(write_val); // Set the fan2 speed
+  #       id(fan1_speed_pwm_voltage).publish_state(write_val*100.0); // Publish the fan1 speed to the frontend
+  #       id(fan2_speed_pwm_voltage).publish_state(write_val*100.0); // Publish the fan2 speed to the frontend
+
+  - platform: template
+    id: proxy_output
+    type: float
+    write_action:
+      lambda: |-
+        if (id(smartfan_switch).state) {
+          id(fan1_speed).set_level(state);
+          id(fan2_speed).set_level(state);
+          id(fan1_speed_pwm_voltage).publish_state(state * 100.0);
+          id(fan2_speed_pwm_voltage).publish_state(state * 100.0);
+        }
+
+
+# If you turn this on, you can manually set the fan speed.
+# The PID will be ignored. This is done via the proxy_output.
+fan:
+  - platform: speed
+    id: manual_fan1_control
+    output: fan1_speed
+    name: "Manual Fan1 Speed"
+
+  - platform: speed
+    id: manual_fan2_control
+    output: fan2_speed
+    name: "Manual Fan2 Speed"
+
+# Expose a PID-controlled Thermostat
+# Manual: https://esphome.io/components/climate/pid.html
+climate:
+  - platform: pid
+    name: "Console Fan Thermostat"
+    id: console_thermostat
+    sensor: console_fan_temperature
+
+    # It is summer right now, so 30c is a decent target.
+    default_target_temperature: 30°C
+    cool_output: proxy_output
+    # cool_output: fan1_speed
+
+    # ON state change, publish the values to the x_term numbers defined 
+    # above, so that they can be viewed in HA
+    on_state:
+      - sensor.template.publish:
+          id: p_term
+          state: !lambda 'return -id(console_thermostat).get_proportional_term() * 100.0;'
+      - sensor.template.publish:
+          id: i_term
+          state: !lambda 'return -id(console_thermostat).get_integral_term()* 100.0;'
+      - sensor.template.publish:
+          id: d_term
+          state: !lambda 'return -id(console_thermostat).get_derivative_term()* 100.0;'
+      - sensor.template.publish:
+          id: o_term
+          state: !lambda 'return -id(console_thermostat).get_output_value()* 100.0;'
+      - sensor.template.publish:
+          id: in_deadband_term
+          state: !lambda 'return id(console_thermostat).in_deadband();'
+      - sensor.template.publish:
+          id: e_term
+          state: !lambda 'return -id(console_thermostat).get_error_value();'
+        
+    # The extents of the HA Thermostat
+    visual:
+      min_temperature: 20 °C
+      max_temperature: 50 °C
+  
+    # See the README for setting up these parameters.
+    # These are over ridden by the number templates above.
+    control_parameters:
+      kp: 0.3
+      ki: 0.0015
+      kd: 0
+      max_integral: 0.0
+      output_averaging_samples: 1
+      derivative_averaging_samples: 5
+
+    # How to behave when close to the target temperature?
+    deadband_parameters:
+      threshold_high: 0.4°C
+      threshold_low: -1.0°C
+      kp_multiplier: 0.0
+      ki_multiplier: 0.04
+      kd_multiplier: 0.0
+      deadband_output_averaging_samples: 15
+
+switch:
+  - platform: template
+    name: "Smart Fan Mode"
+    id: smartfan_switch
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - logger.log: "Smart Fan Mode enabled. Starting at next interval."
+    on_turn_off:
+      - logger.log: "Smart Fan Mode disabled. Fans turning ON at next interval."
+
+  # Expose an ESP32 restart button to HA
+  - platform: restart
+    name: ${friendly_name} ESP32 Restart
+    id: console_fan_restart
+
+# Restart every day at 12:30am. 
+# I've had some memory issues lockup 
+# the device after a couple weeks
+time:
+  - platform: homeassistant
+    on_time:
+      # Every morning at 12:30am
+    - seconds: 0
+      minutes: 30
+      hours: 0
+      then:
+      - switch.turn_on: console_fan_restart
+
+
+# I was able to find good KP,KI,KD values manually, per the instructions,
+# but you can try pressing the autotune button from home assistant and copying the 
+# values it produces. 
+# See more at: https://esphome.io/components/climate/pid.html#climate-pid-autotune-action
+button:
+- platform: template
+  name: "PID Climate Autotune"
+  on_press: 
+    - climate.pid.autotune: console_thermostat
+
+    
+spi: # DISPLAY SPI
+  clk_pin: ${eink_scl} # aka SCL
+  mosi_pin: ${eink_sda} # aka SDA
+
+display:
+  - platform: waveshare_epaper
+    id: display_eink
+    cs_pin: ${eink_cs} # aka CS
+    dc_pin: ${eink_dc} # aka DC
+    busy_pin: ${eink_spi} # aka BUSY
+    reset_pin: ${eink_rst} # aka RST
+    model: 2.13inv3
+    full_update_every: 120
+    update_interval: never
+    reset_duration: 2ms
+    rotation: 270
+
+graphical_display_menu:
+  id: main_menu
+  display: display_eink
+  on_redraw:
+    then:
+      component.update: display_eink
+  active: false
+  font: roboto_16
+  mode: rotary
+  items:
+    - type: switch # SMART FAN MODE
+      text: FAN MODE
+      immediate_edit: true
+      on_text: 'SMART FAN MODE'
+      off_text: 'MANUAL MODE'
+      switch: smartfan_switch
+    - type: custom
+      immediate_edit: false
+      text: "Manual Fan Speed:"
+      value_lambda: |-
+        int percent = (int)(id(manual_fan1_control).speed);
+        if (percent < 0) percent = 0;
+        if (percent > 100) percent = 100;
+        return to_string(percent) + " %";
+      on_next:
+        then:
+          lambda: |-
+            int speed = (int)id(manual_fan1_control).speed;
+            if (speed < 100) speed += 10;
+            if (speed > 100) speed = 100;
+            id(manual_fan1_control).speed = speed;
+            id(manual_fan1_control).publish_state();
+            id(fan1_speed_pwm_voltage).publish_state(speed);
+      on_prev:
+        then:
+          lambda: |-
+            int speed = (int)id(manual_fan1_control).speed;
+            if (speed > 0) speed -= 10;
+            if (speed < 0) speed = 0;
+            id(manual_fan1_control).speed = speed;
+            id(manual_fan1_control).publish_state();
+            id(fan1_speed_pwm_voltage).publish_state(speed);
+      on_enter:
+        then:
+          - fan.turn_on: manual_fan1_control
+    - type: custom
+      immediate_edit: false
+      text: "Manual Fan Speed:"
+      value_lambda: |-
+        int percent = (int)(id(manual_fan2_control).speed);
+        if (percent < 0) percent = 0;
+        if (percent > 100) percent = 100;
+        return to_string(percent) + " %";
+      on_next:
+        then:
+          lambda: |-
+            int speed = (int)id(manual_fan2_control).speed;
+            if (speed < 100) speed += 10;
+            if (speed > 100) speed = 100;
+            id(manual_fan2_control).speed = speed;
+            id(manual_fan2_control).publish_state();
+            id(fan2_speed_pwm_voltage).publish_state(speed);
+      on_prev:
+        then:
+          lambda: |-
+            int speed = (int)id(manual_fan2_control).speed;
+            if (speed > 0) speed -= 10;
+            if (speed < 0) speed = 0;
+            id(manual_fan2_control).speed = speed;
+            id(manual_fan2_control).publish_state();
+            id(fan2_speed_pwm_voltage).publish_state(speed);
+      on_enter:
+        then:
+          - fan.turn_on: manual_fan2_control
+      
+font:
+
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 900
+    id: roboto_16
+    size: 16
